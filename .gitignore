@@ -1,0 +1,48 @@
+# --- Secrets ---
+.env
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Generated pipeline outputs ---
+results/
+
+# --- Downloaded / cached dataset files ---
+# datasets/ is committed; add specific large files here if needed
+*.json.gz
+
+# --- HuggingFace / torch model caches (if downloaded into project dir) ---
+models/
+.cache/
+*.bin
+*.safetensors
+*.pt
+*.ckpt
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- macOS ---
+.DS_Store
