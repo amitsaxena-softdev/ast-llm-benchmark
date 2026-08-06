@@ -22,8 +22,21 @@ The pipeline runs over the [NeoCoder](https://github.com/JHU-CLSP/NeoCoder) data
 
 ## Setup
 
+This project uses [uv](https://docs.astral.sh/uv/) to manage the Python version and dependencies, so setup is a single command with no manual venv/activate steps.
+
+Install uv (skip if already installed):
+```powershell
+# Windows (PowerShell)
+irm https://astral.sh/uv/install.ps1 | iex
+```
 ```bash
-pip install -r requirements.txt
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then install the pinned Python version (3.11) and all locked dependencies into a project-local `.venv`:
+```bash
+uv sync
 ```
 
 Copy `.env.example` to `.env` and fill in your credentials:
@@ -31,6 +44,8 @@ Copy `.env.example` to `.env` and fill in your credentials:
 ```bash
 cp .env.example .env
 ```
+
+> Prefer plain `pip`? `requirements.txt` is kept in sync as a fallback: `pip install -r requirements.txt` inside your own virtual environment works too, but won't get the exact locked versions in `uv.lock`.
 
 `.env` is loaded automatically at startup via `python-dotenv`. The only required value is:
 
@@ -42,21 +57,26 @@ cp .env.example .env
 
 ## Usage
 
+Run everything through `uv run`, which uses the `.venv` created by `uv sync` automatically:
+
 ```bash
 # Full pipeline — AST + Llama-3-8B judge + DeBERTa embeddings
-python main.py
+uv run python main.py
 
 # Skip Llama; use pre-computed GPT-4 labels from the dataset instead
-python main.py --skip-llm
+uv run python main.py --skip-llm
 
 # Skip both Llama and the heavy DeBERTa embedding pass
-python main.py --skip-llm --skip-embeddings
+uv run python main.py --skip-llm --skip-embeddings
 
 # Re-run only the reporting step using cached labels from a prior run
-python main.py --skip-llm --skip-embeddings --skip-ast
+uv run python main.py --skip-llm --skip-embeddings --skip-ast
 
 # Write outputs to a custom directory
-python main.py --output-dir my_results
+uv run python main.py --output-dir my_results
+
+# Launch the Streamlit dashboard
+uv run streamlit run streamlit_app.py
 ```
 
 ## Outputs
@@ -90,12 +110,12 @@ High accuracy is misleading due to class imbalance. The macro-average F1 of 0.50
 
 ## Troubleshooting
 
-**`NumPy 2.x detected` error at startup** — torch, scikit-learn, and transformers require NumPy < 2. Downgrade it:
+**`NumPy 2.x detected` error at startup** — shouldn't happen via `uv sync`, since `uv.lock` pins NumPy < 2 for you. If you installed with plain `pip` instead and still hit this:
 ```bash
 pip install "numpy<2"
 ```
 
-**`AttributeError: 'NoneType' object has no attribute 'endswith'` in DeBERTa tokenizer** — a bug in certain transformers versions with the fast tokenizer. Already worked around in code via `use_fast=False`; if you still see it, upgrade transformers:
+**`AttributeError: 'NoneType' object has no attribute 'endswith'` in DeBERTa tokenizer** — a bug in certain transformers versions with the fast tokenizer. Already worked around in code via `use_fast=False`. If you still see it on a non-uv install, upgrade transformers:
 ```bash
 pip install --upgrade transformers
 ```
@@ -114,4 +134,8 @@ datasets/          # Cached dataset JSON files
 results/           # Generated outputs
 config.py          # Central configuration (models, techniques, thresholds)
 main.py            # Pipeline orchestrator
+pyproject.toml     # Dependency source of truth (used by uv)
+uv.lock            # Locked, reproducible dependency versions
+.python-version    # Pinned interpreter version (3.11) for uv
+requirements.txt   # Fallback dependency list for non-uv/pip installs
 ```

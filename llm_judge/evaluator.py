@@ -172,9 +172,9 @@ class LLMJudge:
 
     def save(self, labels: LLMLabels, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(labels, indent=2))
+        path.write_text(json.dumps(labels, indent=2), encoding="utf-8")
         logger.info(f"LLM labels saved to {path}")
 
     @staticmethod
     def load(path: Path) -> LLMLabels:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))

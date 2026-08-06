@@ -119,7 +119,7 @@ class MetricsReporter:
         report = self._build_report(
             llm_metrics, gpt4_metrics, embedding_results, techniques, solutions, ast_labels
         )
-        (output_dir / "report.md").write_text(report)
+        (output_dir / "report.md").write_text(report, encoding="utf-8")
         logger.info(f"Report written to {output_dir / 'report.md'}")
 
     # ------------------------------------------------------------------

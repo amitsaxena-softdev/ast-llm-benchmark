@@ -112,7 +112,7 @@ if run_btn:
             llm_labels = convert_gpt4_labels(
                 gpt4_labels, cfg.techniques, cfg.technique_label_map
             )
-            llm_labels_path.write_text(json.dumps(llm_labels, indent=2))
+            llm_labels_path.write_text(json.dumps(llm_labels, indent=2), encoding="utf-8")
             phase3.update(
                 label="Phase 3 — GPT-4 labels converted (no API call)",
                 state="complete", expanded=False,
@@ -139,7 +139,7 @@ if run_btn:
     gpt4_binary = convert_gpt4_labels(
         gpt4_labels, cfg.techniques, cfg.technique_label_map
     )
-    (output_dir / "gpt4_binary_labels.json").write_text(json.dumps(gpt4_binary, indent=2))
+    (output_dir / "gpt4_binary_labels.json").write_text(json.dumps(gpt4_binary, indent=2), encoding="utf-8")
 
     # ---- Phase 4 ----
     embedding_results = None
@@ -253,7 +253,7 @@ if report_path.exists():
     with tab_emb:
         emb_path = results_dir / "embedding_results.json"
         if emb_path.exists():
-            emb = json.loads(emb_path.read_text())
+            emb = json.loads(emb_path.read_text(encoding="utf-8"))
             r = emb.get("correlation")
             pairs = emb.get("divergent_pairs", [])
 
@@ -291,11 +291,11 @@ if report_path.exists():
 
     # ---- Full report ----
     with tab_report:
-        st.markdown(report_path.read_text())
+        st.markdown(report_path.read_text(encoding="utf-8"))
         st.divider()
         st.download_button(
             "⬇️ Download report.md",
-            data=report_path.read_text(),
+            data=report_path.read_text(encoding="utf-8"),
             file_name="report.md",
             mime="text/markdown",
         )

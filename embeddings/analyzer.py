@@ -256,9 +256,9 @@ class EmbeddingAnalyzer:
 
     def save(self, results: EmbeddingResults, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(results.to_dict(), indent=2))
+        path.write_text(json.dumps(results.to_dict(), indent=2), encoding="utf-8")
         logger.info(f"Embedding results saved to {path}")
 
     @staticmethod
     def load(path: Path) -> dict:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))

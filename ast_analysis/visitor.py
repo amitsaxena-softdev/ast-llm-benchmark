@@ -17,6 +17,7 @@ sorting            : calls to sorted() or .sort()
 import ast
 import json
 import logging
+import warnings
 from pathlib import Path
 from typing import Dict, List
 
@@ -105,7 +106,11 @@ class ASTAnalyzer:
         Returns all-False on SyntaxError (unparseable code is skipped, not crashed).
         """
         try:
-            tree = ast.parse(code)
+            # Legacy Codeforces solutions trip SyntaxWarning (e.g. old octal literals);
+            # that's not a parse failure, so silence it instead of spamming the console.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                tree = ast.parse(code)
         except SyntaxError:
             return {t: False for t in self.techniques}
         return {t: self.detectors[t](tree) for t in self.techniques}
@@ -118,18 +123,32 @@ class ASTAnalyzer:
         aligned with the input solutions dict.
         """
         result: ASTLabels = {}
+        unparseable = 0
         for pid in tqdm(sorted(solutions.keys()), desc="AST parsing"):
-            result[pid] = [self.analyze_one(code) for code in solutions[pid]]
+            labels = []
+            for code in solutions[pid]:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", SyntaxWarning)
+                    try:
+                        tree = ast.parse(code)
+                    except SyntaxError:
+                        unparseable += 1
+                        labels.append({t: False for t in self.techniques})
+                        continue
+                labels.append({t: self.detectors[t](tree) for t in self.techniques})
+            result[pid] = labels
 
         total = sum(len(v) for v in result.values())
         logger.info(f"AST analysis complete: {total} solutions parsed")
+        if unparseable:
+            logger.warning(f"{unparseable}/{total} solutions had syntax errors and were labeled all-False")
         return result
 
     def save(self, labels: ASTLabels, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(labels, indent=2))
+        path.write_text(json.dumps(labels, indent=2), encoding="utf-8")
         logger.info(f"AST labels saved to {path}")
 
     @staticmethod
     def load(path: Path) -> ASTLabels:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
