@@ -115,14 +115,17 @@ def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
 
 def _structural_sim(labels_a: Dict[str, bool], labels_b: Dict[str, bool]) -> float:
     """
-    Jaccard similarity over the union of active techniques.
-    Returns 1.0 if both have zero active techniques (both empty → identical).
+    Jaccard similarity over the set of techniques active in either solution.
+
+    intersection / union where both sets contain the techniques each solution uses.
+    Returns 1.0 when both solutions use zero techniques (empty ∩ empty = identical).
+    This avoids the sparse-vector inflation problem of the simple matching coefficient,
+    which would count every shared absence as a match and inflate similarity.
     """
     keys = set(labels_a) | set(labels_b)
-    if not keys:
-        return 1.0
-    matches = sum(labels_a.get(k, False) == labels_b.get(k, False) for k in keys)
-    return matches / len(keys)
+    intersection = sum(labels_a.get(k, False) and labels_b.get(k, False) for k in keys)
+    union = sum(labels_a.get(k, False) or labels_b.get(k, False) for k in keys)
+    return intersection / union if union > 0 else 1.0
 
 
 def _techniques_differ(a: Dict[str, bool], b: Dict[str, bool]) -> List[str]:

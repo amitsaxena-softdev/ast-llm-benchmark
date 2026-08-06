@@ -118,7 +118,7 @@ def main():
             logger.info("=" * 60)
             from llm_judge.evaluator import LLMJudge
             judge = LLMJudge(cfg)
-            llm_labels = judge.evaluate_all(solutions)
+            llm_labels = judge.evaluate_all(solutions, ast_labels=ast_labels)
             judge.save(llm_labels, llm_labels_path)
 
     # Also convert GPT-4 labels to binary format for comparison in the report

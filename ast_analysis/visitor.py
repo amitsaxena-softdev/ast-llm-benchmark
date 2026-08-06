@@ -1,17 +1,19 @@
 """
 Deterministic AST-based technique detector.
 
-Uses Python's built-in `ast` module to walk the syntax tree of each solution
-and produce a binary label vector over the configured technique set.
+Uses Python's built-in ast.NodeVisitor to traverse the syntax tree of each
+solution and produce a binary label vector over the configured technique set.
 
 Techniques supported
 --------------------
 for_loop           : any `for` statement (ast.For)
 while_loop         : any `while` statement (ast.While)
-recursion          : a function that calls itself by name
+recursion          : a function that calls itself — bare call f() OR method
+                     call self.f() / obj.f() where the attribute name matches
+                     the enclosing function definition
 list_comprehension : [x for x in ...]  (ast.ListComp)
 lambda             : lambda expressions (ast.Lambda)
-sorting            : calls to sorted() or .sort()
+sorting            : calls to sorted() builtin or .sort() method
 """
 
 import ast
@@ -27,64 +29,77 @@ logger = logging.getLogger(__name__)
 # Type: { pid: [ {technique: bool, ...}, ... ] }
 ASTLabels = Dict[str, List[Dict[str, bool]]]
 
+_ALL_TECHNIQUES = frozenset([
+    "for_loop", "while_loop", "recursion",
+    "list_comprehension", "lambda", "sorting",
+])
+
 
 # ---------------------------------------------------------------------------
-# Individual detectors
+# Single-pass NodeVisitor
 # ---------------------------------------------------------------------------
 
-def _detect_for_loop(tree: ast.AST) -> bool:
-    return any(isinstance(n, ast.For) for n in ast.walk(tree))
+class TechniqueVisitor(ast.NodeVisitor):
+    """
+    Traverses an AST once and sets a detected flag for each technique found.
 
+    Recursion detection covers both direct self-calls (f()) and method-style
+    self-calls (self.f() / obj.f()) where the attribute name matches the
+    enclosing function definition name.  Mutual recursion is not detected.
+    """
 
-def _detect_while_loop(tree: ast.AST) -> bool:
-    return any(isinstance(n, ast.While) for n in ast.walk(tree))
+    def __init__(self) -> None:
+        self.detected: Dict[str, bool] = {t: False for t in _ALL_TECHNIQUES}
+        # Stack of enclosing function names for recursion detection
+        self._func_stack: List[str] = []
 
+    def visit_For(self, node: ast.For) -> None:
+        self.detected["for_loop"] = True
+        self.generic_visit(node)
 
-def _detect_list_comprehension(tree: ast.AST) -> bool:
-    return any(isinstance(n, ast.ListComp) for n in ast.walk(tree))
+    def visit_While(self, node: ast.While) -> None:
+        self.detected["while_loop"] = True
+        self.generic_visit(node)
 
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self.detected["list_comprehension"] = True
+        self.generic_visit(node)
 
-def _detect_lambda(tree: ast.AST) -> bool:
-    return any(isinstance(n, ast.Lambda) for n in ast.walk(tree))
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.detected["lambda"] = True
+        self.generic_visit(node)
 
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._func_stack.append(node.name)
+        self.generic_visit(node)
+        self._func_stack.pop()
 
-def _detect_recursion(tree: ast.AST) -> bool:
-    """A function definition that directly calls itself by name."""
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        func_name = node.name
-        for child in ast.walk(node):
-            if child is node:
-                continue
-            if isinstance(child, ast.Call):
-                callee = child.func
-                if isinstance(callee, ast.Name) and callee.id == func_name:
-                    return True
-    return False
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._func_stack.append(node.name)
+        self.generic_visit(node)
+        self._func_stack.pop()
 
-
-def _detect_sorting(tree: ast.AST) -> bool:
-    """Calls to sorted() builtin or .sort() method."""
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
+    def visit_Call(self, node: ast.Call) -> None:
         func = node.func
+
+        # --- Sorting ---
         if isinstance(func, ast.Name) and func.id == "sorted":
-            return True
-        if isinstance(func, ast.Attribute) and func.attr == "sort":
-            return True
-    return False
+            self.detected["sorting"] = True
+        elif isinstance(func, ast.Attribute) and func.attr == "sort":
+            self.detected["sorting"] = True
 
+        # --- Recursion ---
+        # Check the innermost enclosing function only (direct recursion)
+        if self._func_stack:
+            current = self._func_stack[-1]
+            if isinstance(func, ast.Name) and func.id == current:
+                # bare call: f()
+                self.detected["recursion"] = True
+            elif isinstance(func, ast.Attribute) and func.attr == current:
+                # method-style call: self.f() or obj.f()
+                self.detected["recursion"] = True
 
-_DETECTORS = {
-    "for_loop":           _detect_for_loop,
-    "while_loop":         _detect_while_loop,
-    "recursion":          _detect_recursion,
-    "list_comprehension": _detect_list_comprehension,
-    "lambda":             _detect_lambda,
-    "sorting":            _detect_sorting,
-}
+        self.generic_visit(node)
 
 
 # ---------------------------------------------------------------------------
@@ -93,11 +108,12 @@ _DETECTORS = {
 
 class ASTAnalyzer:
     def __init__(self, techniques: List[str]):
-        unknown = [t for t in techniques if t not in _DETECTORS]
+        unknown = [t for t in techniques if t not in _ALL_TECHNIQUES]
         if unknown:
-            raise ValueError(f"Unknown techniques: {unknown}. Available: {list(_DETECTORS)}")
+            raise ValueError(
+                f"Unknown techniques: {unknown}. Available: {sorted(_ALL_TECHNIQUES)}"
+            )
         self.techniques = techniques
-        self.detectors = {t: _DETECTORS[t] for t in techniques}
 
     def analyze_one(self, code: str) -> Dict[str, bool]:
         """
@@ -108,18 +124,27 @@ class ASTAnalyzer:
             tree = ast.parse(code)
         except SyntaxError:
             return {t: False for t in self.techniques}
-        return {t: self.detectors[t](tree) for t in self.techniques}
+        visitor = TechniqueVisitor()
+        visitor.visit(tree)
+        return {t: visitor.detected[t] for t in self.techniques}
 
-    def analyze_all(self, solutions: Dict[str, List[str]]) -> ASTLabels:
+    def analyze_all(self, solutions: Dict[str, List[str]], progress_callback=None) -> ASTLabels:
         """
         Run analysis over the full solutions dict.
 
         Returns { pid: [ {technique: bool, ...}, ... ] }
         aligned with the input solutions dict.
+
+        progress_callback(fraction) is invoked per problem so a UI can render
+        a live progress bar.
         """
         result: ASTLabels = {}
-        for pid in tqdm(sorted(solutions.keys()), desc="AST parsing"):
+        pids = sorted(solutions.keys())
+        for i, pid in enumerate(tqdm(pids, desc="AST parsing",
+                                     disable=progress_callback is not None), 1):
             result[pid] = [self.analyze_one(code) for code in solutions[pid]]
+            if progress_callback:
+                progress_callback(i / len(pids))
 
         total = sum(len(v) for v in result.values())
         logger.info(f"AST analysis complete: {total} solutions parsed")

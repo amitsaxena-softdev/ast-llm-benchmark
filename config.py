@@ -43,10 +43,16 @@ class Config:
     })
 
     # ---- LLM Judge (Groq free-tier) ----
-    llm_model: str = "llama3-8b-8192"
+    # Note: llama3-8b-8192 was decommissioned by Groq. Current 8B replacement:
+    llm_model: str = "llama-3.1-8b-instant"
     llm_api_key: str = field(default_factory=lambda: os.environ.get("GROQ_API_KEY", ""))
-    # Limit how many solutions we send to the LLM (free-tier rate limit guard)
-    llm_max_solutions: int = 200
+    # Limit how many problems we send to the LLM (one solution each).
+    # Free tier is ~6000 tokens/min, so keep this modest.
+    llm_max_solutions: int = 60
+    # Retries per call on rate-limit/transient errors (honours server retry-after)
+    llm_max_retries: int = 5
+    # Base seconds to wait between calls to stay under the free-tier TPM limit
+    llm_request_interval: float = 1.5
 
     # ---- Embeddings ----
     embedding_model: str = "microsoft/deberta-v3-large"

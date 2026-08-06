@@ -88,6 +88,15 @@ Code:
 JSON response:"""
 
 
+def _retry_after_seconds(error_msg: str, default: float = 5.0) -> float:
+    """Extract the 'try again in Xs' hint from a Groq 429 message."""
+    m = re.search(r"try again in ([\d.]+)\s*s", error_msg)
+    if m:
+        # add a small buffer over the suggested wait
+        return float(m.group(1)) + 1.0
+    return default
+
+
 def _parse_llm_response(text: str, techniques: List[str]) -> Dict[str, bool]:
     """Extract the JSON object from the LLM response, falling back to all-False."""
     # Strip markdown fences if the model disobeys instructions
@@ -119,54 +128,140 @@ class LLMJudge:
             self._client = Groq(api_key=self.cfg.llm_api_key)
         return self._client
 
-    def judge_one(self, code: str) -> Dict[str, bool]:
-        """Send one solution to the LLM and return binary technique labels."""
+    def judge_one(self, code: str) -> Optional[Dict[str, bool]]:
+        """
+        Send one solution to the LLM and return binary technique labels.
+
+        Retries on rate-limit (429) errors, honouring the server's retry-after
+        hint.  Returns None if the call ultimately fails — the caller must skip
+        that solution rather than record fake all-False labels, which would
+        corrupt the error-rate analysis.
+        """
         client = self._get_client()
         prompt = _USER_TEMPLATE.format(code=code[:3000])  # guard against very long solutions
-        try:
-            response = client.chat.completions.create(
-                model=self.cfg.llm_model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user",   "content": prompt},
-                ],
-                temperature=0,
-                max_tokens=256,
-            )
-            text = response.choices[0].message.content or ""
-            return _parse_llm_response(text, self.cfg.techniques)
-        except Exception as exc:
-            logger.warning(f"LLM API error: {exc}")
-            return {t: False for t in self.cfg.techniques}
+
+        for attempt in range(self.cfg.llm_max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model=self.cfg.llm_model,
+                    messages=[
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    temperature=0,
+                    max_tokens=256,
+                )
+                text = response.choices[0].message.content or ""
+                return _parse_llm_response(text, self.cfg.techniques)
+            except Exception as exc:
+                msg = str(exc)
+                is_rate_limit = "429" in msg or "rate_limit" in msg
+                wait = _retry_after_seconds(msg) if is_rate_limit else 1.0
+                if attempt < self.cfg.llm_max_retries - 1:
+                    if is_rate_limit:
+                        logger.info(f"Rate limited; waiting {wait:.1f}s (attempt {attempt+1})")
+                    time.sleep(wait)
+                    continue
+                logger.warning(f"LLM API error (giving up after {attempt+1} attempts): {exc}")
+                return None
+
+    def _stratified_targets(self, solutions, ast_labels, budget):
+        """
+        Pick up to `budget` (pid, idx) solution targets so that every technique
+        is represented by positive examples — including rare ones.
+
+        Without this, a random sample is dominated by the most common technique
+        (for_loop) and never tests the judge on lambda / recursion / list comp,
+        making the judge look deceptively accurate.  Returns a sorted list of
+        (pid, idx) pairs.
+        """
+        # Bucket every solution by the techniques AST says it uses.
+        by_tech = {t: [] for t in self.cfg.techniques}
+        for pid in sorted(ast_labels.keys()):
+            if pid not in solutions:
+                continue
+            for idx, lbl in enumerate(ast_labels[pid]):
+                if idx >= len(solutions[pid]):
+                    continue
+                for t in self.cfg.techniques:
+                    if lbl.get(t, False):
+                        by_tech[t].append((pid, idx))
+
+        # Round-robin across techniques, rarest first, so scarce techniques are
+        # guaranteed representation before the budget is exhausted.
+        order = sorted(self.cfg.techniques, key=lambda t: len(by_tech[t]))
+        chosen, seen = [], set()
+        cursor = {t: 0 for t in order}
+        while len(chosen) < budget:
+            progressed = False
+            for t in order:
+                if len(chosen) >= budget:
+                    break
+                bucket = by_tech[t]
+                while cursor[t] < len(bucket):
+                    cand = bucket[cursor[t]]
+                    cursor[t] += 1
+                    if cand not in seen:
+                        seen.add(cand)
+                        chosen.append(cand)
+                        progressed = True
+                        break
+            if not progressed:
+                break
+        return sorted(chosen)
 
     def evaluate_all(
         self,
         solutions: Dict[str, List[str]],
+        ast_labels: Optional[Dict] = None,
+        progress_callback=None,
     ) -> LLMLabels:
         """
         Evaluate up to cfg.llm_max_solutions solutions with the LLM judge.
 
-        Solutions are sampled uniformly across problems to respect the free-tier
-        rate limit while covering as many problems as possible.
+        If ast_labels is provided, solutions are chosen by *stratified* sampling
+        so every technique (including rare lambda / recursion) is represented —
+        this is what makes the judge's failure modes measurable.  Otherwise it
+        falls back to one solution per problem.
+
+        Results are stored positionally: result[pid][idx] aligns with
+        ast_labels[pid][idx]; unevaluated slots are None and skipped by the
+        metrics.  Failed API calls (after retries) are left as None rather than
+        recorded as fake all-False, which would corrupt the error-rate analysis.
+
+        progress_callback(done, total) is invoked after each solution.
         """
+        budget = self.cfg.llm_max_solutions
+        if ast_labels:
+            targets = self._stratified_targets(solutions, ast_labels, budget)
+        else:
+            targets = [(p, 0) for p in sorted(solutions) if solutions[p]][:budget]
+
         result: LLMLabels = {}
-        evaluated = 0
-        max_sol = self.cfg.llm_max_solutions
+        total = len(targets)
+        skipped = 0
 
-        for pid in tqdm(sorted(solutions.keys()), desc="LLM judging"):
-            if evaluated >= max_sol:
-                break
-            codes = solutions[pid]
-            result[pid] = []
-            for code in codes:
-                if evaluated >= max_sol:
-                    break
-                labels = self.judge_one(code)
-                result[pid].append(labels)
-                evaluated += 1
-                # Small sleep to stay within Groq free-tier rate limits
-                time.sleep(0.05)
+        with tqdm(total=total, desc="LLM judging",
+                  disable=progress_callback is not None) as pbar:
+            for i, (pid, idx) in enumerate(targets, 1):
+                labels = self.judge_one(solutions[pid][idx])
+                # Ensure result[pid] is long enough, padding with None.
+                slot = result.setdefault(pid, [])
+                while len(slot) <= idx:
+                    slot.append(None)
+                if labels is not None:
+                    slot[idx] = labels
+                else:
+                    skipped += 1
+                pbar.update(1)
+                if progress_callback:
+                    progress_callback(i, total)
+                time.sleep(self.cfg.llm_request_interval)
 
+        if skipped:
+            logger.warning(f"Skipped {skipped} solutions due to API failures")
+
+        evaluated = sum(1 for v in result.values() for x in v if x is not None)
         logger.info(f"LLM judge evaluated {evaluated} solutions across {len(result)} problems")
         return result
 
