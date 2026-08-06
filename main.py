@@ -106,7 +106,7 @@ def main():
             gpt4_labels, cfg.techniques, cfg.technique_label_map
         )
         # Save so the reporter can use it
-        llm_labels_path.write_text(json.dumps(llm_labels, indent=2))
+        llm_labels_path.write_text(json.dumps(llm_labels, indent=2), encoding="utf-8")
     else:
         if llm_labels_path.exists():
             logger.info("PHASE 3 — Reloading cached Llama labels")
@@ -127,7 +127,7 @@ def main():
         gpt4_labels, cfg.techniques, cfg.technique_label_map
     )
     (output_dir / "gpt4_binary_labels.json").write_text(
-        json.dumps(gpt4_binary, indent=2)
+        json.dumps(gpt4_binary, indent=2), encoding="utf-8"
     )
 
     # ------------------------------------------------------------------

@@ -185,7 +185,7 @@ class MetricsReporter:
             solutions, ast_labels,
             raw_solution_count=raw_solution_count,
         )
-        (output_dir / "report.md").write_text(report)
+        (output_dir / "report.md").write_text(report, encoding="utf-8")
         logger.info(f"Report written to {output_dir / 'report.md'}")
 
     # ------------------------------------------------------------------

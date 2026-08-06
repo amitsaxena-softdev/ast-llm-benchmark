@@ -10,6 +10,7 @@ Both files are aligned: solutions[pid][i] corresponds to techniques[pid][i].
 import json
 import logging
 import os
+import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -39,7 +40,11 @@ def _is_python(code: str) -> bool:
     """Heuristic: try parsing with the ast module; C++ will always fail."""
     import ast
     try:
-        ast.parse(code)
+        # Legacy Codeforces solutions trip SyntaxWarning (e.g. old octal literals);
+        # that's not a parse failure, so silence it instead of spamming the console.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            ast.parse(code)
         return True
     except SyntaxError:
         return False
@@ -60,8 +65,8 @@ def load_dataset(cfg: Config) -> Tuple[Solutions, GPT4Labels]:
     _download(cfg.human_solutions_url, sol_path)
     _download(cfg.gpt4_techniques_url, tec_path)
 
-    raw_solutions: Dict[str, List[str]] = json.loads(sol_path.read_text())
-    raw_techniques: Dict[str, List[List[str]]] = json.loads(tec_path.read_text())
+    raw_solutions: Dict[str, List[str]] = json.loads(sol_path.read_text(encoding="utf-8"))
+    raw_techniques: Dict[str, List[List[str]]] = json.loads(tec_path.read_text(encoding="utf-8"))
 
     solutions: Solutions = {}
     gpt4_labels: GPT4Labels = {}
@@ -90,6 +95,10 @@ def load_dataset(cfg: Config) -> Tuple[Solutions, GPT4Labels]:
     logger.info(
         f"Retained {len(solutions)} problems, {total_solutions} Python solutions"
     )
+    total_input = sum(min(len(raw_solutions.get(pid, [])), len(raw_techniques.get(pid, []))) for pid in problem_ids)
+    dropped = total_input - total_solutions
+    if dropped:
+        logger.warning(f"Dropped {dropped} non-Python / misaligned solutions during filtering")
     return solutions, gpt4_labels
 
 

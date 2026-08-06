@@ -1,0 +1,4 @@
+# Keep lock/config files LF regardless of OS to avoid CRLF-conversion noise on Windows.
+uv.lock text eol=lf
+pyproject.toml text eol=lf
+*.py text eol=lf

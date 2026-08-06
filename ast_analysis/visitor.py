@@ -19,6 +19,7 @@ sorting            : calls to sorted() builtin or .sort() method
 import ast
 import json
 import logging
+import warnings
 from pathlib import Path
 from typing import Dict, List
 
@@ -121,7 +122,11 @@ class ASTAnalyzer:
         Returns all-False on SyntaxError (unparseable code is skipped, not crashed).
         """
         try:
-            tree = ast.parse(code)
+            # Legacy Codeforces solutions trip SyntaxWarning (e.g. old octal literals);
+            # that's not a parse failure, so silence it instead of spamming the console.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                tree = ast.parse(code)
         except SyntaxError:
             return {t: False for t in self.techniques}
         visitor = TechniqueVisitor()
@@ -148,13 +153,15 @@ class ASTAnalyzer:
 
         total = sum(len(v) for v in result.values())
         logger.info(f"AST analysis complete: {total} solutions parsed")
+        if unparseable:
+            logger.warning(f"{unparseable}/{total} solutions had syntax errors and were labeled all-False")
         return result
 
     def save(self, labels: ASTLabels, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(labels, indent=2))
+        path.write_text(json.dumps(labels, indent=2), encoding="utf-8")
         logger.info(f"AST labels saved to {path}")
 
     @staticmethod
     def load(path: Path) -> ASTLabels:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))

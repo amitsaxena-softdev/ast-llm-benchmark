@@ -250,7 +250,7 @@ if report_path.exists():
     with tab_emb:
         emb_path = results_dir / "embedding_results.json"
         if emb_path.exists():
-            emb = json.loads(emb_path.read_text())
+            emb = json.loads(emb_path.read_text(encoding="utf-8"))
             r = emb.get("correlation")
             pairs = emb.get("divergent_pairs", [])
 
@@ -289,11 +289,11 @@ if report_path.exists():
 
     # ---- Full report ----
     with tab_report:
-        st.markdown(report_path.read_text())
+        st.markdown(report_path.read_text(encoding="utf-8"))
         st.divider()
         st.download_button(
             "⬇️ Download report.md",
-            data=report_path.read_text(),
+            data=report_path.read_text(encoding="utf-8"),
             file_name="report.md",
             mime="text/markdown",
         )
