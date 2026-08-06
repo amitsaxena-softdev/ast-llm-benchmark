@@ -26,6 +26,7 @@ results/*
 !results/report.md
 !results/llm_heatmap.png
 !results/gpt4_heatmap.png
+!results/embedding_scatter.png
 
 # --- Downloaded / cached dataset files ---
 # datasets/ is committed; add specific large files here if needed

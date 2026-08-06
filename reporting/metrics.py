@@ -179,6 +179,9 @@ class MetricsReporter:
         self._plot_heatmap(gpt4_metrics, techniques, output_dir / "gpt4_heatmap.png",
                            "GPT-4 vs AST")
 
+        if embedding_results:
+            self._plot_embedding_scatter(embedding_results, output_dir / "embedding_scatter.png")
+
         report = self._build_report(
             llm_metrics, gpt4_metrics,
             llm_impact, gpt4_impact,
@@ -226,6 +229,104 @@ class MetricsReporter:
         fig.savefig(path, dpi=150)
         plt.close(fig)
         logger.info(f"Heatmap saved to {path}")
+
+    def _plot_embedding_scatter(self, embedding_results: dict, path: Path) -> None:
+        """
+        Cosine similarity (semantic, x-axis) vs. structural Jaccard similarity
+        (y-axis) for same-problem pairs — the visual for section 3 of the
+        report. The 10 top divergent pairs (also listed as a table in the
+        report) are highlighted: same problem, near-identical embedding, yet
+        a different technique — the concrete proof embeddings miss structure.
+        """
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            logger.warning("matplotlib not installed — skipping embedding scatter plot")
+            return
+
+        from embeddings.analyzer import _structural_sim
+
+        pairwise = embedding_results.get("pairwise_data", [])
+        if not pairwise:
+            return
+        divergent = embedding_results.get("divergent_pairs", [])
+        r = embedding_results.get("correlation", 0.0)
+
+        cos_vals = np.array([c for c, _ in pairwise])
+        str_vals = np.array([s for _, s in pairwise])
+
+        # Structural similarity only takes ~9 discrete Jaccard ratios (6
+        # techniques), so an unjittered scatter reads as solid horizontal
+        # bars. Small vertical jitter de-overlaps them for readability —
+        # visual only, does not alter the underlying data or reported r.
+        rng = np.random.default_rng(self.cfg.random_seed)
+        jitter = rng.uniform(-0.012, 0.012, size=len(str_vals))
+        str_jittered = np.clip(str_vals + jitter, -0.02, 1.02)
+
+        surface, grid, muted, secondary, primary = (
+            "#fcfcfb", "#e1e0d9", "#898781", "#52514e", "#0b0b0b",
+        )
+        accent, trend_color = "#eb6834", "#256abf"
+
+        fig, ax = plt.subplots(figsize=(8, 5.5))
+        fig.patch.set_facecolor(surface)
+        ax.set_facecolor(surface)
+
+        ax.scatter(
+            cos_vals, str_jittered, s=18, c=muted, alpha=0.18, linewidths=0,
+            label=f"Same-problem pairs (n={len(pairwise):,})", zorder=2,
+        )
+
+        if len(cos_vals) > 1:
+            slope, intercept = np.polyfit(cos_vals, str_vals, 1)
+            xs = np.linspace(cos_vals.min(), cos_vals.max(), 100)
+            ax.plot(xs, slope * xs + intercept, color=trend_color, linewidth=2, zorder=3)
+
+        div_cos, div_str = [], []
+        for p in divergent:
+            div_cos.append(p["cosine_similarity"])
+            div_str.append(_structural_sim(p["techniques_a"], p["techniques_b"]))
+        if div_cos:
+            # Semi-transparent (not opaque): several of these pairs sit at
+            # nearly identical coordinates, so overlapping markers compose
+            # into a visibly denser dot rather than one point silently
+            # hiding the others underneath it. No jitter here — these are
+            # exact values, individually listed in the table below.
+            ax.scatter(
+                div_cos, div_str, s=110, c=accent, alpha=0.55, edgecolors=surface,
+                linewidths=1.2, zorder=4, label=f"Top divergent pairs (n={len(div_cos)})",
+            )
+            from collections import Counter
+            cluster_counts = Counter(zip(np.round(div_cos, 2), np.round(div_str, 2)))
+            (cx, cy), n_stacked = cluster_counts.most_common(1)[0]
+            if n_stacked > 1:
+                ax.annotate(
+                    f"{n_stacked} of {len(div_cos)} top pairs cluster here",
+                    xy=(cx, cy), xytext=(cx - 0.16, cy - 0.14),
+                    color=secondary, fontsize=9,
+                    arrowprops=dict(arrowstyle="-", color=muted, linewidth=1),
+                )
+
+        ax.set_xlabel("Cosine similarity (semantic, DeBERTa embedding)", color=secondary)
+        ax.set_ylabel("Structural similarity (Jaccard over AST techniques)", color=secondary)
+        ax.set_title(
+            f"Semantic similarity vs. structural similarity — same-problem pairs\n"
+            f"Pearson r = {r:.3f}  ·  r² ≈ {r**2:.1%} of structural variance explained",
+            color=primary, fontsize=12,
+        )
+        ax.grid(True, color=grid, linewidth=1, linestyle="-")
+        ax.set_axisbelow(True)
+        for spine in ax.spines.values():
+            spine.set_color("#c3c2b7")
+        ax.tick_params(colors=muted)
+        ax.set_xlim(max(0, cos_vals.min() - 0.03), 1.02)
+        ax.set_ylim(-0.05, 1.05)
+        ax.legend(loc="lower left", frameon=False, labelcolor=secondary, fontsize=9)
+
+        fig.tight_layout()
+        fig.savefig(path, dpi=150, facecolor=fig.get_facecolor())
+        plt.close(fig)
+        logger.info(f"Embedding scatter plot saved to {path}")
 
     def _build_report(
         self,
@@ -410,6 +511,13 @@ pairs only**): **{r:.3f}**{ci_str}
 Pairs are restricted to two solutions of *the same* problem — the only pairs
 guaranteed functionally equivalent, since every human solution to a given
 problem passed that problem's test suite. This correlation is {emb_verdict}.
+
+![Semantic similarity vs. structural similarity, same-problem pairs](embedding_scatter.png)
+
+The trend line's shallow slope is the visual version of r² ≈ {r2:.1%}: as
+cosine similarity rises toward 1.0 (right edge), structural similarity does
+not reliably follow. The highlighted points are the same pairs listed in the
+table below — same problem, near-identical embedding, different technique.
 
 ### Top Divergent Pairs (high cosine sim, different AST structure, same problem)
 

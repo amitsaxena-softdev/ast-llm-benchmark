@@ -55,7 +55,7 @@ def convert_gpt4_labels(
                 for t in techniques
             }
             result[pid].append(binary)
-    logger.info(f"Converted GPT-4 labels for {len(result)} problems")
+    logger.debug(f"Converted GPT-4 labels for {len(result)} problems")
     return result
 
 

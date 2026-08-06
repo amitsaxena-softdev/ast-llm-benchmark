@@ -40,6 +40,13 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
+# httpx (used by the groq client) logs every request at INFO by default, and
+# groq's own _base_client logs "Retrying request..." at INFO on every retry —
+# both interrupt tqdm's progress bar redraw. Only our own logs need INFO.
+# (Retries are already visible via our own logger.info in llm_judge/evaluator.py.)
+for _noisy_logger in ("httpx", "httpcore", "urllib3", "groq"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 

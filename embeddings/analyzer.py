@@ -67,8 +67,18 @@ class EmbeddingResults:
 
 def _load_model(model_name: str):
     """Load tokenizer + model from HuggingFace. Returns (tokenizer, model)."""
+    import transformers
+    import huggingface_hub
     from transformers import AutoModel, DebertaV2Tokenizer
     import torch
+
+    # transformers/huggingface_hub manage their own logger verbosity, separate
+    # from the root logger — this silences the "unauthenticated requests"
+    # notice and the per-load "UNEXPECTED weights" report table, both benign
+    # and expected every run (we load AutoModel from a checkpoint that also
+    # ships pretraining-head weights we don't use).
+    transformers.logging.set_verbosity_error()
+    huggingface_hub.utils.logging.set_verbosity_error()
 
     logger.info(f"Loading embedding model: {model_name}")
     # AutoTokenizer ignores use_fast=False for DeBERTa-v2 in some transformers versions,
@@ -77,8 +87,26 @@ def _load_model(model_name: str):
     # use_safetensors=True avoids the torch.load CVE-2025-32434 block (requires torch>=2.6)
     model = AutoModel.from_pretrained(model_name, use_safetensors=True)
     model.eval()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     model = model.to(device)
+
+    if device == "mps":
+        # Not every op has an MPS kernel in every PyTorch version — probe with
+        # a trivial forward pass now rather than fail partway through a long
+        # encoding run.
+        try:
+            _encode_batch(["print(1)"], tokenizer, model)
+        except Exception as exc:
+            logger.warning(f"MPS probe failed ({exc}); falling back to CPU")
+            device = "cpu"
+            model = model.to(device)
+
     logger.info(f"Model loaded on {device}")
     return tokenizer, model
 

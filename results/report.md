@@ -67,6 +67,13 @@ Pairs are restricted to two solutions of *the same* problem — the only pairs
 guaranteed functionally equivalent, since every human solution to a given
 problem passed that problem's test suite. This correlation is small but, given the tight confidence interval, distinguishable from zero — the two axes are **not** strictly orthogonal. However, r² ≈ 5.2% means semantic similarity explains only about 5% of the variance in structural similarity: the vast majority of whether two functionally-equivalent solutions share the same structural techniques remains invisible to embeddings alone.
 
+![Semantic similarity vs. structural similarity, same-problem pairs](embedding_scatter.png)
+
+The trend line's shallow slope is the visual version of r² ≈ 5.2%: as
+cosine similarity rises toward 1.0 (right edge), structural similarity does
+not reliably follow. The highlighted points are the same pairs listed in the
+table below — same problem, near-identical embedding, different technique.
+
 ### Top Divergent Pairs (high cosine sim, different AST structure, same problem)
 
 These are two solutions to the **same problem** (hence functionally
