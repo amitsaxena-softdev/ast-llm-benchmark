@@ -154,6 +154,12 @@ if run_btn:
     from llm_judge.evaluator import convert_gpt4_labels
     gpt4_binary = convert_gpt4_labels(gpt4_labels, cfg.techniques, cfg.technique_label_map)
     (output_dir / "gpt4_binary_labels.json").write_text(json.dumps(gpt4_binary, indent=2))
+    gpt4_vocab = {
+        l.strip().lower()
+        for sol_lists in gpt4_labels.values()
+        for raw_labels in sol_lists
+        for l in raw_labels
+    }
 
     # ---- Phase 4 — Embeddings ----
     embedding_results = None
@@ -189,6 +195,7 @@ if run_btn:
         gpt4_labels=gpt4_binary,
         embedding_results=embedding_results,
         output_dir=output_dir,
+        gpt4_vocab=gpt4_vocab,
     )
     p5_done("Report generated")
 
@@ -267,17 +274,19 @@ if report_path.exists():
                 )
 
             if pairs:
-                st.subheader("Top Divergent Pairs")
+                st.subheader("Top Divergent Pairs (same problem)")
                 st.caption(
-                    "These solution pairs are semantically near-identical (high cosine sim) "
-                    "but structurally divergent (different AST techniques) — proving embeddings "
-                    "cannot enforce structural constraints."
+                    "Each pair is two solutions to the SAME problem (functionally "
+                    "equivalent by construction) that are semantically near-identical "
+                    "(high cosine sim) but structurally divergent (different AST "
+                    "techniques) — proving embeddings cannot enforce structural "
+                    "constraints even when functional equivalence is certain."
                 )
                 rows = [
                     {
                         "#": i + 1,
-                        "Problem A": f"{p['pid_a']}[{p['idx_a']}]",
-                        "Problem B": f"{p['pid_b']}[{p['idx_b']}]",
+                        "Problem": p['pid_a'],
+                        "Solutions": f"[{p['idx_a']}] vs [{p['idx_b']}]",
                         "Cosine Sim": round(p["cosine_similarity"], 3),
                         "Differing Techniques": ", ".join(p["differing_techniques"]),
                     }

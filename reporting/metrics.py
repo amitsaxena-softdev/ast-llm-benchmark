@@ -156,6 +156,7 @@ class MetricsReporter:
         embedding_results: Optional[dict],
         output_dir: Path,
         raw_solution_count: Optional[int] = None,
+        gpt4_vocab: Optional[set] = None,
     ) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         techniques = self.cfg.techniques
@@ -184,6 +185,7 @@ class MetricsReporter:
             embedding_results, techniques,
             solutions, ast_labels,
             raw_solution_count=raw_solution_count,
+            gpt4_vocab=gpt4_vocab,
         )
         (output_dir / "report.md").write_text(report, encoding="utf-8")
         logger.info(f"Report written to {output_dir / 'report.md'}")
@@ -236,6 +238,7 @@ class MetricsReporter:
         solutions:    dict,
         ast_labels:   ASTLabels,
         raw_solution_count: Optional[int] = None,
+        gpt4_vocab: Optional[set] = None,
     ) -> str:
         total_solutions = sum(len(v) for v in solutions.values())
         total_problems  = len(solutions)
@@ -282,6 +285,7 @@ class MetricsReporter:
 
         # AST prevalence
         prevalence_rows = []
+        low_n_techniques = []
         total_ast = sum(len(v) for v in ast_labels.values())
         for t in techniques:
             count = sum(
@@ -289,11 +293,24 @@ class MetricsReporter:
             )
             prevalence_rows.append([t, count, total_ast,
                                      f"{count/total_ast:.1%}" if total_ast else "—"])
+            if count < 10:
+                low_n_techniques.append((t, count))
         prevalence_table = tabulate(
             prevalence_rows,
             headers=["Technique", "Positive", "Total", "Prevalence"],
             tablefmt="github",
         )
+
+        low_n_note = ""
+        if low_n_techniques:
+            names = ", ".join(f"`{t}` (n={c})" for t, c in low_n_techniques)
+            low_n_note = (
+                f"\n> **Small-sample caveat**: {names} have very few ground-truth "
+                f"positive examples. Precision/recall/F1 for these techniques in "
+                f"the tables below are correspondingly noisy — a single "
+                f"misclassified solution can swing the score by tens of "
+                f"percentage points. Read them as directional, not precise.\n"
+            )
 
         # Dataset reconciliation note
         raw_note = (
@@ -311,44 +328,104 @@ class MetricsReporter:
                 f"The proposal figure of 5,970 refers to the unfiltered set."
             )
 
+        # GPT-4 label vocabulary-gap check: some techniques may never appear in
+        # the raw label strings at all — that's a taxonomy gap in how the
+        # labels were generated, not a live per-solution judgment failure, and
+        # the report should say so rather than implying GPT-4 looked at the
+        # code and missed it every time.
+        vocab_gap_techniques = []
+        if gpt4_vocab is not None:
+            for t in techniques:
+                label_str = self.cfg.technique_label_map.get(t, "").strip().lower()
+                if label_str and label_str not in gpt4_vocab:
+                    vocab_gap_techniques.append(t)
+
+        vocab_gap_note = ""
+        if vocab_gap_techniques:
+            names = ", ".join(f"`{t}`" for t in vocab_gap_techniques)
+            vocab_gap_note = (
+                f"\n> **Vocabulary-gap caveat**: {names} never appear anywhere "
+                f"in the GPT-4 label vocabulary shipped with the raw NeoCoder "
+                f"dataset (0 occurrences across every unique technique string, "
+                f"any problem, any language). Their FNR below therefore "
+                f"reflects a taxonomy gap in how the original labels were "
+                f"generated, not GPT-4 failing to recognize the construct in "
+                f"code it was shown per-solution — a different (and arguably "
+                f"more damning, since it means the taxonomy itself is "
+                f"incomplete) failure mode than `for_loop`'s hallucination "
+                f"rate, which *is* a live judgment error on a category the "
+                f"labels do cover.\n"
+            )
+
         # Embedding section with confidence interval
         emb_section = ""
+        emb_verdict = ""  # reused in the Conclusion so the two sections can't disagree
         if embedding_results:
             r = embedding_results.get("correlation", 0.0)
             pairs = embedding_results.get("divergent_pairs", [])
             n_pairs = len(embedding_results.get("pairwise_data", []))
+            r2 = r ** 2
 
             # Fisher z-transform confidence interval
             ci_str = ""
+            ci_excludes_zero = False
             if n_pairs > 3:
                 z  = np.arctanh(np.clip(r, -0.9999, 0.9999))
                 se = 1.0 / np.sqrt(n_pairs - 3)
                 r_lo = float(np.tanh(z - 1.96 * se))
                 r_hi = float(np.tanh(z + 1.96 * se))
                 ci_str = f" (95% CI: [{r_lo:.3f}, {r_hi:.3f}], n={n_pairs:,} pairs)"
+                ci_excludes_zero = r_lo > 0 or r_hi < 0
+
+            # Interpretation is data-driven, not hardcoded, so it can't end up
+            # contradicting whatever r/CI the run actually produced.
+            if abs(r) < 0.1:
+                emb_verdict = (
+                    f"statistically indistinguishable from zero — the two axes "
+                    f"are orthogonal, even among solutions that are provably "
+                    f"functionally equivalent"
+                )
+            elif ci_excludes_zero:
+                emb_verdict = (
+                    f"small but, given the tight confidence interval, "
+                    f"distinguishable from zero — the two axes are **not** "
+                    f"strictly orthogonal. However, r² ≈ {r2:.1%} means semantic "
+                    f"similarity explains only about {r2:.0%} of the variance in "
+                    f"structural similarity: the vast majority of whether two "
+                    f"functionally-equivalent solutions share the same structural "
+                    f"techniques remains invisible to embeddings alone"
+                )
+            else:
+                emb_verdict = (
+                    f"small and not statistically distinguishable from zero "
+                    f"given the confidence interval above"
+                )
 
             emb_section = f"""
 ## 3. Embedding vs. Structure Analysis
 
-**Pearson r** (cosine similarity vs. structural Jaccard similarity): **{r:.3f}**{ci_str}
+**Pearson r** (cosine similarity vs. structural Jaccard similarity, **same-problem
+pairs only**): **{r:.3f}**{ci_str}
 
-A value near 0 confirms the proposal's hypothesis: semantic similarity is
-orthogonal to structural compliance.  The confidence interval confirms this is
-not a sampling artefact — even the upper bound is near zero.
+Pairs are restricted to two solutions of *the same* problem — the only pairs
+guaranteed functionally equivalent, since every human solution to a given
+problem passed that problem's test suite. This correlation is {emb_verdict}.
 
-### Top Divergent Pairs (high cosine sim, different AST structure)
+### Top Divergent Pairs (high cosine sim, different AST structure, same problem)
 
-These pairs are semantically near-identical yet use structurally different
-techniques — empirical proof that embeddings cannot enforce structural constraints.
+These are two solutions to the **same problem** (hence functionally
+equivalent by construction) that are semantically near-identical yet use
+structurally different techniques — empirical proof that embeddings cannot
+enforce structural constraints even when functional equivalence is certain.
 
-| # | Problem A | Problem B | Cosine Sim | Differing Techniques |
-|---|-----------|-----------|------------|----------------------|
+| # | Problem | Solutions | Cosine Sim | Differing Techniques |
+|---|---------|-----------|------------|----------------------|
 """
             for i, p in enumerate(pairs[:10], 1):
                 diffs = ", ".join(p["differing_techniques"])
                 emb_section += (
-                    f"| {i} | {p['pid_a']}[{p['idx_a']}] "
-                    f"| {p['pid_b']}[{p['idx_b']}] "
+                    f"| {i} | {p['pid_a']} "
+                    f"| [{p['idx_a']}] vs [{p['idx_b']}] "
                     f"| {p['cosine_similarity']:.3f} "
                     f"| `{diffs}` |\n"
                 )
@@ -400,7 +477,7 @@ directly quantifying the epistemological error introduced by the LLM-as-a-Judge 
 ## 1. AST Ground Truth — Technique Prevalence
 
 {prevalence_table}
-
+{low_n_note}
 ---
 
 ## 2. LLM Judge Error Rates vs. AST Ground Truth
@@ -417,7 +494,7 @@ the dominance of `for_loop`. The smaller N reflects free-tier rate limits.
 ### 2b. GPT-4 (pre-computed labels from NeoCoder dataset, full coverage)
 
 {_metrics_table(gpt4_metrics)}
-
+{vocab_gap_note}
 **Interpretation**: FPR = hallucination rate (model reports technique when absent).
 FNR = miss rate (model fails to detect a technique that is present).
 {emb_section}
@@ -435,10 +512,16 @@ non-zero error.
 are the labels real adversarial-creativity frameworks (NeoCoder, Denial Prompting)
 depend on. Measured against AST ground truth over all {total_solutions} solutions,
 they exhibit catastrophic systematic blind spots: a **100% miss rate (FNR = 1.0)
-on both `lambda` and `list_comprehension`** — the model never once detected them —
-and a **47% hallucination rate (FPR) on `for_loop`**. At the problem level this
-compounds to a **{gpt4_overall_err:.0%} diversity-assessment error rate**, with
-individual techniques as high as 74% (`list_comprehension`).
+on both `lambda` and `list_comprehension`**{
+    " — driven by a taxonomy gap: neither category appears anywhere in the "
+    "GPT-4 label vocabulary for this dataset, so this reflects an incomplete "
+    "labeling taxonomy rather than a live per-solution judgment failure"
+    if vocab_gap_techniques else " — the model never once detected them"
+} — and a **47% hallucination rate (FPR) on `for_loop`**, which *is* a live
+judgment error, since `for loop` is squarely within the labels' vocabulary. At
+the problem level this compounds to a **{gpt4_overall_err:.0%}
+diversity-assessment error rate**, with individual techniques as high as 74%
+(`list_comprehension`).
 
 **Corroborating evidence — a controlled, live judge.** A well-prompted
 {self.cfg.llm_model} run, evaluated per-solution on a stratified sample, performs
@@ -448,11 +531,15 @@ but is *still not error-free*: it hallucinates `list_comprehension`
 is that LLM-judge reliability is highly sensitive to prompt and setup — and no
 configuration reaches the determinism a structural constraint demands.
 
-**Embeddings are not a substitute.** The Pearson correlation between semantic
-similarity and structural compliance is ≈ {
+**Embeddings are not a substitute.** Restricted to same-problem solution pairs
+— the only pairs guaranteed functionally equivalent, since they all pass the
+same test suite — the Pearson correlation between semantic similarity and
+structural compliance is ≈ {
     f"{embedding_results['correlation']:.3f}" if embedding_results else 'N/A'
-} — statistically indistinguishable from zero — proving the two axes are
-orthogonal.
+}, which is {emb_verdict if embedding_results else "not available (embeddings were skipped for this run)"}.
+Either way, semantic similarity is not a reliable proxy for structural
+compliance, and cannot substitute for deterministic AST parsing when the
+constraint being enforced is structural rather than functional.
 
 **Therefore**: automated creativity evaluation in rule-bound domains requires a
 **dual-axis approach** — deterministic AST parsing to enforce structural

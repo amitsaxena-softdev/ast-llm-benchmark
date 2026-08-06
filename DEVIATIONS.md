@@ -18,6 +18,8 @@ project's core thesis.
 | 4 | Narrative emphasis | Llama as primary LLM judge | GPT-4 (benchmark labels) as primary evidence | Empirical result: Llama outperformed the dataset's GPT-4 labels |
 | 5 | Llama model | `Llama-3-8B-Instruct` | `llama-3.1-8b-instant` | Original Groq model was decommissioned |
 | 6 | AST traversal | `ast.NodeVisitor` | `ast.NodeVisitor` (now matches) | Initially used `ast.walk`; refactored to match proposal |
+| 7 | Embedding pair sampling | (Unspecified) | Restricted to same-problem pairs | Cross-problem pairs aren't functionally equivalent, so they don't test the §1.2 claim |
+| 8 | `lambda`/`list_comprehension` FNR framing | (Unspecified) | Framed as a labeling-taxonomy gap, not a live LLM miss | Neither string ever appears in GPT-4's label vocabulary for this dataset |
 
 ---
 
@@ -125,6 +127,68 @@ described. (An earlier draft used `ast.walk()`, which traverses the same tree bu
 does not match the proposal's stated API; it was refactored to use `NodeVisitor`
 with proper `visit_*` dispatch.) The recursion detector was also broadened to
 catch method-style self-calls (`self.f()` / `obj.f()`), not only bare `f()` calls.
+
+---
+
+## 7. Embedding pair sampling: corpus-wide → same-problem only
+
+**Proposal (§1.2):** "If two code fragments arrive at the identical functional
+answer but one uses a banned loop and the other uses allowed recursion, their
+semantic embeddings remain highly similar…" — the claim is specifically about
+two solutions to *the same* problem, since that's what guarantees functional
+equivalence.
+
+**Earlier implementation:** Sampled 5,000 random pairs from the entire pool of
+encoded solutions, uniformly across all 198 problems. In practice this meant
+almost every sampled pair compared solutions to two *different* problems (e.g.
+the report's top divergent pair was `1777A[10]` vs `1882A[4]`).
+
+**Why this was a problem:** Two solutions to different Codeforces problems have
+no a priori reason to be functionally equivalent, so a high cosine similarity
+between them doesn't test the proposal's claim — it just shows that generic
+mean-pooled DeBERTa embeddings are dominated by boilerplate (I/O parsing,
+variable-naming conventions) shared across unrelated problems. That's a real
+finding, but not the one being claimed.
+
+**Fix:** `EmbeddingAnalyzer.encode_all()` now subsamples by *whole problem*
+(keeping every solution of a sampled problem together, up to the solution-count
+cap) instead of by individual solution, and `analyze()` only forms pairs
+within the same `pid`. Every pair is now guaranteed functionally equivalent —
+both solutions passed the same test suite — which is a strictly stronger and
+more defensible version of the same experiment. The measured correlation
+stayed near zero after the fix, so the conclusion is unchanged; only the
+pairs backing it are now the right ones.
+
+---
+
+## 8. `lambda` / `list_comprehension` framing: judgment failure → taxonomy gap
+
+**Earlier implementation:** The report described GPT-4's 100% FNR on `lambda`
+and `list_comprehension` as "the model never once detected them" — implying a
+live per-solution judgment failure, on the same footing as the `for_loop`
+hallucination rate.
+
+**What the raw data shows:** The full GPT-4 label vocabulary shipped with the
+NeoCoder dataset (`human_solution_techniques.json`) contains exactly 41 unique
+technique strings across all 5,970 solutions in every language. `lambda` and
+`list comprehension` are not among them — not once, anywhere in the dataset.
+`for loop`, `while loop`, `recursion`, and `sorting` all *are* present, which
+is why their FPR/FNR numbers represent genuine judgment quality.
+
+**Why this matters:** A 0-occurrence label across the entire corpus is best
+explained by the original labeling prompt using a closed/omitted taxonomy
+that never offered "lambda" or "list comprehension" as an option — not by
+GPT-4 examining lambda expressions and failing to name them. Framing this as
+"the model missed it" overstates what was tested.
+
+**Fix:** `reporting/metrics.py` now cross-checks each technique's label
+string against the full raw GPT-4 vocabulary (passed in as `gpt4_vocab`) and,
+for any technique absent from that vocabulary, generates an explicit
+"vocabulary-gap" caveat in the report instead of the blanket "missed it"
+framing. This is arguably a *stronger* point for the thesis — it shows
+prompted/taxonomy-driven labeling can be structurally incomplete in a way
+enumerable AST parsing cannot be — but it needed to be stated accurately
+rather than implied.
 
 ---
 

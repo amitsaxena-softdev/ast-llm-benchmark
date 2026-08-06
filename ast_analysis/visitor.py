@@ -21,7 +21,7 @@ import json
 import logging
 import warnings
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from tqdm import tqdm
 
@@ -116,10 +116,12 @@ class ASTAnalyzer:
             )
         self.techniques = techniques
 
-    def analyze_one(self, code: str) -> Dict[str, bool]:
+    def _analyze_one(self, code: str) -> Tuple[Dict[str, bool], bool]:
         """
-        Parse a single Python code string and return a dict of technique -> bool.
-        Returns all-False on SyntaxError (unparseable code is skipped, not crashed).
+        Parse a single Python code string.
+
+        Returns (labels, parsed) where labels is all-False and parsed is False
+        on SyntaxError (unparseable code is skipped, not crashed).
         """
         try:
             # Legacy Codeforces solutions trip SyntaxWarning (e.g. old octal literals);
@@ -128,10 +130,15 @@ class ASTAnalyzer:
                 warnings.simplefilter("ignore", SyntaxWarning)
                 tree = ast.parse(code)
         except SyntaxError:
-            return {t: False for t in self.techniques}
+            return {t: False for t in self.techniques}, False
         visitor = TechniqueVisitor()
         visitor.visit(tree)
-        return {t: visitor.detected[t] for t in self.techniques}
+        return {t: visitor.detected[t] for t in self.techniques}, True
+
+    def analyze_one(self, code: str) -> Dict[str, bool]:
+        """Parse a single Python code string and return a dict of technique -> bool."""
+        labels, _ = self._analyze_one(code)
+        return labels
 
     def analyze_all(self, solutions: Dict[str, List[str]], progress_callback=None) -> ASTLabels:
         """
@@ -144,10 +151,17 @@ class ASTAnalyzer:
         a live progress bar.
         """
         result: ASTLabels = {}
+        unparseable = 0
         pids = sorted(solutions.keys())
         for i, pid in enumerate(tqdm(pids, desc="AST parsing",
                                      disable=progress_callback is not None), 1):
-            result[pid] = [self.analyze_one(code) for code in solutions[pid]]
+            labels_list = []
+            for code in solutions[pid]:
+                labels, parsed = self._analyze_one(code)
+                labels_list.append(labels)
+                if not parsed:
+                    unparseable += 1
+            result[pid] = labels_list
             if progress_callback:
                 progress_callback(i / len(pids))
 

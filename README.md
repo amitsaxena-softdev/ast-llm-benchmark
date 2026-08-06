@@ -94,7 +94,9 @@ All files land in `results/` (or `--output-dir`):
 | `gpt4_heatmap.png` | Heatmap of GPT-4 error rates |
 | `report.md` | Full Markdown report with all tables and conclusions |
 
-## Key Results (Llama-3-8B vs. AST Ground Truth)
+## Key Results
+
+### GPT-4 (pre-computed labels shipped with NeoCoder, full coverage N=4725 — primary evidence)
 
 | Technique | Accuracy | F1 | FPR (hallucination) | FNR (miss rate) |
 |-----------|----------|----|---------------------|-----------------|
@@ -106,7 +108,40 @@ All files land in `results/` (or `--output-dir`):
 | sorting | 0.962 | 0.803 | 0.001 | 0.321 |
 | **Macro avg** | **0.964** | **0.502** | **0.079** | **0.464** |
 
-High accuracy is misleading due to class imbalance. The macro-average F1 of 0.50 reveals substantial miss rates for rare techniques (`lambda`, `list_comprehension`), while `for_loop` inflates the false-positive rate due to frequency bias.
+High accuracy is misleading due to class imbalance. `lambda` and
+`list_comprehension` never appear anywhere in GPT-4's label vocabulary for
+this dataset (0 of 41 unique technique strings, any problem, any language) —
+their FNR = 1.0 reflects a **taxonomy gap** in the original labels, not a live
+per-solution miss. `for_loop`'s 47% FPR *is* a live judgment error, since
+`for loop` is squarely within the vocabulary. See [DEVIATIONS.md](DEVIATIONS.md#8-lambda--list_comprehension-framing-judgment-failure--taxonomy-gap).
+
+### Llama-3.1-8B-Instant (live Groq run, stratified sample N=60 — corroborating evidence)
+
+| Technique | Accuracy | F1 | FPR (hallucination) | FNR (miss rate) |
+|-----------|----------|----|---------------------|-----------------|
+| for_loop | 0.950 | 0.974 | 0.500 | 0.018 |
+| while_loop | 1.000 | 1.000 | 0.000 | 0.000 |
+| recursion | 1.000 | 1.000 | 0.000 | 0.000 |
+| list_comprehension | 0.950 | 0.909 | 0.067 | 0.000 |
+| lambda | 1.000 | 1.000 | 0.000 | 0.000 |
+| sorting | 0.983 | 0.960 | 0.021 | 0.000 |
+| **Macro avg** | **0.981** | **0.974** | **0.098** | **0.003** |
+
+A well-prompted, freshly-run judge does far better than the dataset's shipped
+labels, but is still not error-free (`for_loop` FPR = 0.5). N=60 is a
+stratified sample, not full coverage, so treat this as corroborating rather
+than primary evidence.
+
+### Embeddings vs. structure
+
+Restricted to same-problem solution pairs — the only pairs guaranteed
+functionally equivalent, since every solution to a given problem passed that
+problem's test suite — semantic similarity (DeBERTa cosine) vs. structural
+similarity (AST Jaccard) has Pearson **r ≈ 0.227** (95% CI excludes zero: not
+strictly orthogonal), but r² ≈ 5% means embeddings explain only about 5% of
+structural variance — a poor substitute for deterministic parsing.
+
+Full numbers, methodology notes, and caveats: [results/report.md](results/report.md).
 
 ## Troubleshooting
 

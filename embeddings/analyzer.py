@@ -146,7 +146,13 @@ class EmbeddingAnalyzer:
         self, solutions: Dict[str, List[str]], progress_callback=None
     ) -> Tuple[List[np.ndarray], List[str], List[int]]:
         """
-        Encode all solutions in batches.
+        Encode solutions in batches.
+
+        Solutions are subsampled by *whole problem*, not individually — this
+        keeps every sampled problem's full solution set together, so
+        same-problem pairs (the only pairs guaranteed functionally equivalent,
+        since they all pass the same test suite) remain available to
+        analyze().
 
         Returns:
             embeddings – list of 1-D numpy vectors
@@ -155,23 +161,37 @@ class EmbeddingAnalyzer:
         """
         self._ensure_model()
 
+        cap = self.cfg.embedding_max_solutions
+        pids_sorted = sorted(solutions.keys())
+        total_available = sum(len(solutions[p]) for p in pids_sorted)
+
+        if cap and total_available > cap:
+            rng = np.random.default_rng(self.cfg.random_seed)
+            order = list(rng.permutation(pids_sorted))
+            selected_pids, total = [], 0
+            for pid in order:
+                n = len(solutions[pid])
+                if total and total + n > cap:
+                    continue
+                selected_pids.append(pid)
+                total += n
+                if total >= cap:
+                    break
+            selected_pids = sorted(selected_pids)
+            logger.info(
+                f"Embedding subsample: {total}/{total_available} solutions "
+                f"across {len(selected_pids)} problems (whole-problem "
+                f"sampling, so same-problem pairs remain available)"
+            )
+        else:
+            selected_pids = pids_sorted
+
         flat_codes, flat_pids, flat_idxs = [], [], []
-        for pid in sorted(solutions.keys()):
+        for pid in selected_pids:
             for i, code in enumerate(solutions[pid]):
                 flat_codes.append(code[:2000])
                 flat_pids.append(pid)
                 flat_idxs.append(i)
-
-        cap = self.cfg.embedding_max_solutions
-        if cap and len(flat_codes) > cap:
-            total = len(flat_codes)
-            rng = np.random.default_rng(self.cfg.random_seed)
-            chosen = rng.choice(total, size=cap, replace=False)
-            chosen.sort()
-            flat_codes = [flat_codes[k] for k in chosen]
-            flat_pids  = [flat_pids[k]  for k in chosen]
-            flat_idxs  = [flat_idxs[k]  for k in chosen]
-            logger.info(f"Embedding subsample: {cap} / {total} solutions")
 
         embeddings = []
         bs = self.cfg.embedding_batch_size
@@ -194,8 +214,15 @@ class EmbeddingAnalyzer:
     ) -> EmbeddingResults:
         """
         Main analysis:
-        1. Encode all solutions.
-        2. Sample random pairs and compute (cosine_sim, structural_sim).
+        1. Encode solutions (whole-problem subsample).
+        2. Form pairs *within the same problem only* — these are guaranteed
+           functionally equivalent, since every human solution to a given
+           Codeforces problem passed that problem's test suite. Cross-problem
+           pairs are deliberately excluded: two solutions to different
+           problems have no reason to be functionally equivalent, so their
+           cosine similarity wouldn't test the proposal's claim (see project
+           proposal section 1.2 — the comparison is about two solutions to
+           *the same* problem).
         3. Find the top divergent pairs (high cosine sim, diff structure).
         4. Compute Pearson correlation between the two similarity axes.
         """
@@ -203,17 +230,27 @@ class EmbeddingAnalyzer:
         n = len(embeddings)
         logger.info(f"Encoded {n} solutions")
 
+        by_pid: Dict[str, List[int]] = {}
+        for i, pid in enumerate(pids):
+            by_pid.setdefault(pid, []).append(i)
+
+        candidate_pairs: List[Tuple[int, int]] = []
+        for members in by_pid.values():
+            for a in range(len(members)):
+                for b in range(a + 1, len(members)):
+                    candidate_pairs.append((members[a], members[b]))
+
+        logger.info(f"{len(candidate_pairs)} same-problem solution pairs available")
+
         rng = np.random.default_rng(self.cfg.random_seed)
-        sample_size = min(max_pairs, n * (n - 1) // 2)
-        pair_indices = rng.choice(n, size=(sample_size, 2), replace=True)
-        # Ensure i < j
-        pair_indices = np.sort(pair_indices, axis=1)
-        pair_indices = pair_indices[pair_indices[:, 0] != pair_indices[:, 1]]
+        if len(candidate_pairs) > max_pairs:
+            chosen = rng.choice(len(candidate_pairs), size=max_pairs, replace=False)
+            candidate_pairs = [candidate_pairs[k] for k in chosen]
 
         pairwise_data: List[Tuple[float, float]] = []
         candidate_divergent: List[Tuple[float, DivergentPair]] = []
 
-        for i, j in tqdm(pair_indices[:max_pairs], desc="Computing pair similarities"):
+        for i, j in tqdm(candidate_pairs, desc="Computing pair similarities"):
             csim = _cosine_sim(embeddings[i], embeddings[j])
 
             labels_i = ast_labels.get(pids[i], [{}])[idxs[i]] if idxs[i] < len(ast_labels.get(pids[i], [])) else {}

@@ -20,7 +20,12 @@ env/
 ENV/
 
 # --- Generated pipeline outputs ---
-results/
+# Raw label dumps / cached intermediates stay ignored (regenerable, noisy diffs).
+# The human-readable deliverable is committed so it's visible on GitHub as-is.
+results/*
+!results/report.md
+!results/llm_heatmap.png
+!results/gpt4_heatmap.png
 
 # --- Downloaded / cached dataset files ---
 # datasets/ is committed; add specific large files here if needed

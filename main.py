@@ -130,6 +130,16 @@ def main():
         json.dumps(gpt4_binary, indent=2), encoding="utf-8"
     )
 
+    # Full raw label vocabulary (pre-binary-conversion) — lets the reporter
+    # distinguish "GPT-4 was shown this construct and missed it" from
+    # "this construct was never part of the labeling taxonomy at all".
+    gpt4_vocab = {
+        l.strip().lower()
+        for sol_lists in gpt4_labels.values()
+        for raw_labels in sol_lists
+        for l in raw_labels
+    }
+
     # ------------------------------------------------------------------
     # Phase 4 — Embedding vs. structure analysis
     # ------------------------------------------------------------------
@@ -169,6 +179,7 @@ def main():
         gpt4_labels=gpt4_binary,
         embedding_results=embedding_results,
         output_dir=output_dir,
+        gpt4_vocab=gpt4_vocab,
     )
 
     logger.info("=" * 60)
